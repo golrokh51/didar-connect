@@ -1,5 +1,7 @@
 """Headless storage tests; no real records or Qt required."""
 import ast, pathlib, tempfile, sqlite3, os, json, base64
+from contextlib import closing
+from pathlib import Path
 from datetime import date
 import resource_directory as rd
 from cryptography.fernet import Fernet, InvalidToken
@@ -81,3 +83,44 @@ with tempfile.TemporaryDirectory() as temp:
  from openpyxl import load_workbook
  w=load_workbook(x,read_only=True); assert w.sheetnames==['Impact statistics','Definitions']; assert not any('SECRET' in str(v) or 'private@example.test' in str(v) for sheet in w for row in sheet.values for v in row); w.close(); assert pdf.read_bytes().startswith(b'%PDF-'); db.db.close()
 print('PASS: impact reports, date range, committee scope, deduplication, expenses, read-only aggregation and Excel/PDF export')
+
+# V1.0: stable location, daily snapshot, authenticated restore and rollback safety.
+import storage_tools as st
+with tempfile.TemporaryDirectory() as temp:
+ folder=pathlib.Path(temp).resolve(); legacy=folder/'Library/Application Support/DIDAR Connect'; qt=folder/'alternate'; legacy.mkdir(parents=True); qt.mkdir()
+ assert st.data_folder(qt,folder,'darwin')==legacy
+ assert st.data_folder(qt,folder,'darwin',qt)==qt
+ # macOS temporary paths may contain symlink aliases (e.g. /var -> /private/var).
+ if os.name != 'nt':
+  alias=folder/'qt-alias'; alias.symlink_to(qt,target_is_directory=True)
+  assert st.data_folder(alias,folder,'darwin',alias)==qt
+  assert st.data_folder(alias,folder,'darwin')==legacy
+ (qt/'didar.sqlite').touch(); assert st.data_folder(qt,folder,'darwin')==qt
+ if os.name != 'nt':
+  assert st.data_folder(alias,folder,'darwin')==qt
+ (legacy/'didar.sqlite').touch()
+ try: st.data_folder(qt,folder,'darwin'); raise AssertionError('ambiguous path accepted')
+ except ValueError: pass
+ (legacy/'didar.sqlite').unlink(); (qt/'didar.sqlite').unlink()
+ db=Store(folder/'didar.sqlite','dummy-password-123'); person=db.save({'First name':'Before','Last name':'Dummy'}); snap=st.daily_backup(db,folder); assert snap.exists() and st.daily_backup(db,folder) is None
+ db.save({'First name':'After','Last name':'Dummy'},person); manual=st.create_backup(db,folder); assert manual.exists()
+ safety=st.restore_backup(db,folder,snap); assert dict(db.people())[person]['First name']=='Before'; saved=Store(safety,'dummy-password-123'); assert dict(saved.people())[person]['First name']=='After'; saved.db.close()
+ other=Store(folder/'other.sqlite','dummy-password-123'); other.db.close()
+ import shutil
+ corrupt=folder/'corrupt.sqlite'; shutil.copyfile(snap,corrupt)
+ with sqlite3.connect(corrupt) as c: c.execute('UPDATE people SET payload=?',(b'bad-token',))
+ old=folder/'old.sqlite'; shutil.copyfile(snap,old)
+ with sqlite3.connect(old) as c: c.execute('DROP TABLE resources')
+ for invalid in [folder/'didar.sqlite',folder/'other.sqlite',corrupt,old]:
+  try: st.restore_backup(db,folder,invalid); raise AssertionError('invalid restore accepted')
+  except (ValueError,InvalidToken): pass
+ assert dict(db.people())[person]['First name']=='Before'; assert len(st.backups(folder))==3
+ before=(folder/'didar.sqlite').read_bytes()
+ try: Store(folder/'didar.sqlite','incorrect'); raise AssertionError('wrong passphrase accepted')
+ except InvalidToken: pass
+ assert (folder/'didar.sqlite').read_bytes()==before
+ invalid_file=folder/'empty.sqlite'; invalid_file.touch()
+ try: Store(invalid_file,'dummy-password-123'); raise AssertionError('uninitialized file accepted')
+ except sqlite3.Error: pass
+ db.db.close()
+print('PASS: data path, daily backup, authenticated restore, pre-restore safety snapshot and invalid backup rejection')

@@ -1,5 +1,38 @@
-# DIDAR Connect V0.9
-Single-user, offline student accompaniment prototype. Python 3.10–3.13 recommended.
+# DIDAR Connect V1.0 — macOS release candidate
+Single-user, offline community management system. Python 3.10–3.13 recommended. This source release is not a prebuilt or notarized application and is not security-audited.
+
+## V1.0 quick start (macOS)
+
+1. In V0.9 create a manual backup, record the exact Database location and quit. Keep a protected second backup off the computer. Never run V0.9 and V1.0 against the same database simultaneously.
+2. Copy the new source files and assets into the existing Git working tree. Preserve `.git`, `.gitignore`, `.venv` and the external database. Activate the venv and run:
+
+```sh
+python -m pip install -r requirements-build.txt
+python test_store.py
+python main.py --data-dir "$HOME/DIDAR-Connect-test-v1"
+```
+
+The explicit test directory is separate from the real database; approve creation there, use a dummy passphrase and dummy records only. Verify all modules, reports, home dashboard, manual backup, restore (edit a dummy record, restore an earlier snapshot, verify both restored record and safety backup), lock & close and relaunch. Quit the source app.
+
+```sh
+bash build_macos.sh
+open -n "dist/DIDAR Connect.app" --args --data-dir "$HOME/DIDAR-Connect-test-v1"
+```
+
+Confirm the packaged app sees your existing dummy records. Check PDF/Excel exports from the bundle. Quit it, open `dist` in Finder (`open dist`), and drag `DIDAR Connect.app` to Applications (or `~/Applications`). Do not overwrite an older app without preserving it. Launch normally only after testing. Check the Database & backups location matches V0.9 exactly; cancel if unexpectedly prompted to create a new database. If necessary launch with `--data-dir` and the recorded V0.9 directory. Test with the installed bundle before using real data. The app needs no Terminal or venv for normal launch after a successful build. The build is native to the Mac/Python architecture, not a cross-platform installer. If macOS blocks the local build, diagnose signing or permissions rather than disabling Gatekeeper. The bundle uses local/ad hoc signing as provided by PyInstaller, not Developer ID signing or notarization. Windows packaging is deferred.
+
+## V1.0 features and storage safeguards
+
+- Home dashboard with current registry totals, open cases, active assignments, completed activities and overdue follow-ups; refresh manually after changes.
+- Database & backups shows the full path, file size, backup count and latest copy; opens the folder in Finder. The usual macOS path is `~/Library/Application Support/DIDAR Connect/didar.sqlite`. A different existing Qt location is preferred if it is the only database; ambiguous paths are rejected. `--data-dir` deliberately overrides this selection. Confirm the path on your own Mac.
+- One automatic snapshot on the first successful login each calendar day. It captures the database at that login, not later edits. Use manual backups after important work. Copies are not automatically deleted or moved off-device; manage retention and protected off-device backups yourself.
+- Restore validates the SQLite integrity, exact current schema, foreign keys, database salt and encrypted payloads. It creates a safety snapshot before restoring via SQLite backup. Only compatible same-database backups are accepted. This is not an import/merge or a recovery mechanism for a lost passphrase. For older incompatible backups, keep the original untouched and migrate a separate copy using the original passphrase before restoration.
+- Lock & close exits the process; relaunch to unlock. No automatic idle lock. V1.0 uses a local Qt lock file to prevent concurrent V1.0 instances for the same directory; earlier releases do not respect this lock. Close them first. This is not a multi-user database.
+- Existing Fernet payload encryption and passphrase are retained; SQLite metadata, IDs, relationships and counts are visible. New files use restrictive defaults on POSIX; existing permissions are not automatically changed. Use FileVault, a password manager, restricted access and protected backups. Exported files are not encrypted. No privacy compliance certification or independent security audit. Defer real personal data until your local validation and organizational privacy/security review are complete.
+- All seven headless test groups pass in the build environment; GUI, macOS packaging, Gatekeeper behavior and application launch have not been tested here. The macOS build script must be run locally. No database or personal data is shipped.
+
+## Historical development notes
+The following sections describe earlier versions; use the V1.0 instructions above for the current release.
 
 ## macOS
 Open Terminal in the extracted folder:

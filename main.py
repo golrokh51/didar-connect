@@ -1,13 +1,16 @@
-import sys, json, sqlite3, os
+import sys, json, sqlite3, os, argparse
 from pathlib import Path
+from contextlib import closing
 from datetime import date
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLineEdit,QComboBox,QTextEdit,QPushButton,QLabel,QTableWidget,QTableWidgetItem,QTabWidget,QMessageBox,QDialog,QDialogButtonBox,QAbstractItemView,QHeaderView,QInputDialog,QCheckBox,QScrollArea,QDoubleSpinBox,QFileDialog)
-from PySide6.QtCore import Qt,QStandardPaths
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLineEdit,QComboBox,QTextEdit,QPushButton,QLabel,QTableWidget,QTableWidgetItem,QTabWidget,QMessageBox,QDialog,QDialogButtonBox,QAbstractItemView,QHeaderView,QInputDialog,QCheckBox,QScrollArea,QDoubleSpinBox,QFileDialog,QStackedWidget,QGridLayout)
+from PySide6.QtCore import Qt,QStandardPaths,QLockFile,QUrl
+from PySide6.QtGui import QDesktopServices
 from cryptography.fernet import Fernet,InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import base64
 import resource_directory as rd
 import impact_reports as ir
+import storage_tools as st
 
 FIELDS=['First name','Last name','Email','Phone','Country of origin (optional)','Preferred language','University','Department','Program','Academic level','Supervisor','Referral source','Referrer name','Referrer email','Referral date','Expected arrival','Consent','Status','Assigned mentor','Next action','Follow-up date','Needs / notes']
 NEEDS_GROUPS={
@@ -23,12 +26,20 @@ def student_id(i): return f'DIDAR-IS-{i:06d}'
 STATUSES=['Initial contact','Consultation scheduled','Needs assessment','Awaiting mentor','Active accompaniment','Completed','Withdrawn']
 class Store:
  def __init__(self,path,password):
+  existing=Path(path).exists() and str(path)!=':memory:'
   self.db=sqlite3.connect(path); self.db.execute('PRAGMA foreign_keys=ON')
+  try:
+   if existing:
+    row=self.db.execute("SELECT v FROM config WHERE k='salt'").fetchone(); check=self.db.execute("SELECT v FROM config WHERE k='check'").fetchone()
+    if not row or not check: raise ValueError('Existing database has no authentication configuration.')
+    salt=row[0]
+   else: salt=os.urandom(16)
+   self.key=Fernet(base64.urlsafe_b64encode(Scrypt(salt=salt,length=32,n=2**15,r=8,p=1).derive(password.encode())))
+   if existing and self.key.decrypt(check[0])!=b'DIDAR': raise InvalidToken()
+  except Exception:
+   self.db.close(); raise
   self.db.executescript('CREATE TABLE IF NOT EXISTS config(k TEXT PRIMARY KEY,v BLOB); CREATE TABLE IF NOT EXISTS people(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS interactions(id INTEGER PRIMARY KEY AUTOINCREMENT,person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL);')
-  row=self.db.execute("SELECT v FROM config WHERE k='salt'").fetchone(); salt=row[0] if row else os.urandom(16)
-  self.key=Fernet(base64.urlsafe_b64encode(Scrypt(salt=salt,length=32,n=2**15,r=8,p=1).derive(password.encode())))
-  if row: self.key.decrypt(self.db.execute("SELECT v FROM config WHERE k='check'").fetchone()[0])
-  else:
+  if not existing:
    self.db.executemany('INSERT INTO config VALUES (?,?)',[('salt',salt),('check',self.key.encrypt(b'DIDAR'))]); self.db.commit()
   self.db.executescript("CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, student_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS volunteer_hours(id INTEGER PRIMARY KEY AUTOINCREMENT, person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL);")
   self.db.executescript("CREATE TABLE IF NOT EXISTS committees(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY AUTOINCREMENT,committee_id INTEGER NOT NULL REFERENCES committees(id),payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS memberships(id INTEGER PRIMARY KEY AUTOINCREMENT,committee_id INTEGER NOT NULL REFERENCES committees(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(committee_id,person_id)); CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,program_id INTEGER NOT NULL REFERENCES programs(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(program_id,person_id));")
@@ -121,7 +132,7 @@ class Store:
  def history(self,i): return [self.dec(p) for (p,) in self.db.execute('SELECT payload FROM interactions WHERE person_id=? ORDER BY id DESC',(i,))]
  def delete(self,i): self.db.execute('DELETE FROM people WHERE id=?',(i,)); self.db.commit(); self.db.execute('VACUUM')
  def backup(self,path):
-  with sqlite3.connect(path) as dest: self.db.backup(dest)
+  with closing(sqlite3.connect(path)) as dest: self.db.backup(dest)
 
 class Editor(QDialog):
  def __init__(self,parent,data):
@@ -195,8 +206,9 @@ class HelperEditor(QDialog):
   self.accept()
 class Window(QMainWindow):
  def __init__(self,store,folder):
-  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.9'); self.resize(1250,750)
+  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v1.0'); self.resize(1250,750)
   root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); side_scroll=QScrollArea(); side_scroll.setWidgetResizable(True); side_scroll.setMinimumWidth(250); side_scroll.setMaximumWidth(320); side_panel=QWidget(); side=QVBoxLayout(side_panel); side_scroll.setWidget(side_panel); outer.addWidget(side_scroll); brand=QLabel('DIDAR\nCONNECT'); brand.setObjectName('brand'); side.addWidget(brand)
+  home=QPushButton('Home / dashboard'); home.clicked.connect(self.show_home); side.addWidget(home)
   for name,mode in [('People registry','people'),('International students','students'),('Volunteers & mentors','helpers')]:
    b=QPushButton(name); b.clicked.connect(lambda checked=False,m=mode:self.switch(m)); side.addWidget(b)
   self.helper_buttons=[]
@@ -210,17 +222,36 @@ class Window(QMainWindow):
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
   resource=QPushButton('Community resources'); resource.clicked.connect(self.resource_dialog); side.addWidget(resource)
   reports=QPushButton('Statistics & impact reports'); reports.clicked.connect(self.impact_dialog); side.addWidget(reports)
-  storage=QPushButton('Database location'); storage.clicked.connect(lambda:QMessageBox.information(self,'Database location',str(self.folder/'didar.sqlite'))); side.addWidget(storage)
+  storage=QPushButton('Database & backups'); storage.clicked.connect(self.storage_dialog); side.addWidget(storage)
   side.addStretch(); backup=QPushButton('Create database backup'); backup.clicked.connect(self.backup); side.addWidget(backup)
-  main=QVBoxLayout(); outer.addLayout(main,1); self.title=QLabel(); self.title.setObjectName('title'); main.addWidget(self.title); self.stats=QLabel(); main.addWidget(self.stats); bar=QHBoxLayout(); main.addLayout(bar); self.search=QLineEdit(); self.search.setPlaceholderText('Search name, ID, email, role…'); self.search.textChanged.connect(self.refresh); bar.addWidget(self.search,1)
+  lock=QPushButton('Lock & close'); lock.clicked.connect(self.close); side.addWidget(lock)
+  self.pages=QStackedWidget(); outer.addWidget(self.pages,1); self.home=QWidget(); self.pages.addWidget(self.home); registry=QWidget(); self.pages.addWidget(registry); main=QVBoxLayout(registry); self.title=QLabel(); self.title.setObjectName('title'); main.addWidget(self.title); self.stats=QLabel(); main.addWidget(self.stats); bar=QHBoxLayout(); main.addLayout(bar); self.search=QLineEdit(); self.search.setPlaceholderText('Search name, ID, email, role…'); self.search.textChanged.connect(self.refresh); bar.addWidget(self.search,1)
   self.filter=QComboBox(); self.filter.addItems(['All roles']+ROLES); self.filter.currentTextChanged.connect(self.refresh); bar.addWidget(self.filter)
   self.add_button=QPushButton(); self.add_button.clicked.connect(self.add); bar.addWidget(self.add_button)
   self.case_button=QPushButton('Open / add student profile'); self.case_button.clicked.connect(self.open_case); bar.addWidget(self.case_button)
   for text,fn in [('Edit profile',self.edit),('Log interaction',self.log),('History',self.history),('Delete',self.delete)]:
    b=QPushButton(text); b.clicked.connect(fn); bar.addWidget(b)
-  self.table=QTableWidget(0,6); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.SingleSelection); self.table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.doubleClicked.connect(self.edit); main.addWidget(self.table); self.switch('people')
+  self.table=QTableWidget(0,6); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.SingleSelection); self.table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.doubleClicked.connect(self.edit); main.addWidget(self.table); self.build_home(); self.switch('people'); self.show_home()
+ def build_home(self):
+  layout=QVBoxLayout(self.home); title=QLabel('Welcome to DIDAR Connect'); title.setObjectName('title'); layout.addWidget(title)
+  desc=QLabel('Community management • Local workspace'); layout.addWidget(desc)
+  grid=QGridLayout(); layout.addLayout(grid); self.home_labels={}
+  for j,name in enumerate(['Registered people','International students','Open student cases','Active mentor assignments','Completed activities','Overdue student follow-ups']):
+   card=QWidget(); card.setObjectName('metric'); col=QVBoxLayout(card); col.addWidget(QLabel(name)); value=QLabel('0'); value.setObjectName('metricValue'); col.addWidget(value); grid.addWidget(card,j//2,j%2); self.home_labels[name]=value
+  layout.addWidget(QLabel('Quick actions'))
+  for label,fn in [('People registry',lambda:self.switch('people')),('International students',lambda:self.switch('students')),('Activities',lambda:self.organization_dialog('activities')),('Statistics & impact reports',self.impact_dialog),('Database & backups',self.storage_dialog),('Refresh dashboard',self.show_home)]:
+   b=QPushButton(label); b.clicked.connect(fn); layout.addWidget(b)
+  layout.addStretch(); info=QLabel('Database: '+str(self.folder/'didar.sqlite')); info.setWordWrap(True); info.setTextInteractionFlags(Qt.TextSelectableByMouse); layout.addWidget(info)
+ def show_home(self):
+  people=self.store.people(); students=[d for _,d in people if 'International student' in roles(d)]; opened=[d for d in students if d.get('Status') not in ('Completed','Withdrawn')]; overdue=0
+  for d in opened:
+   try: overdue+=date.fromisoformat(d.get('Follow-up date',''))<date.today()
+   except (ValueError,TypeError): pass
+  values=[len(people),len(students),len(opened),sum(a[-1].get('status')=='Active' for a in self.store.assignments()),sum(r[-1].get('Status')=='Completed' for r in self.store.records('activities')),overdue]
+  for label,value in zip(self.home_labels.values(),values): label.setText(str(value))
+  self.pages.setCurrentIndex(0)
  def switch(self,mode):
-  self.mode=mode; people=mode=='people'; helper=mode=='helpers'; self.title.setText({'people':'Central people registry','students':'International student accompaniment','helpers':'Volunteers & mentors'}[mode]); self.add_button.setText({'people':'Add person','students':'Add student','helpers':'Add volunteer / mentor'}[mode]); self.case_button.setVisible(people); self.filter.setVisible(people); self.search.clear(); self.table.setHorizontalHeaderLabels(['Person ID','Name','Roles','Email','Affiliation','Language'] if people else ['Person ID','Name','Roles','Availability','Status','Total hours'] if helper else ['Student ID','Name','University','Status','Next action','Follow-up']); self.refresh()
+  self.pages.setCurrentIndex(1); self.mode=mode; people=mode=='people'; helper=mode=='helpers'; self.title.setText({'people':'Central people registry','students':'International student accompaniment','helpers':'Volunteers & mentors'}[mode]); self.add_button.setText({'people':'Add person','students':'Add student','helpers':'Add volunteer / mentor'}[mode]); self.case_button.setVisible(people); self.filter.setVisible(people); self.search.clear(); self.table.setHorizontalHeaderLabels(['Person ID','Name','Roles','Email','Affiliation','Language'] if people else ['Person ID','Name','Roles','Availability','Status','Total hours'] if helper else ['Student ID','Name','University','Status','Next action','Follow-up']); self.refresh()
  def refresh(self,*args):
   if not hasattr(self,'table'): return
   all_people=self.store.people(); people=all_people if self.mode=='people' else [(i,d) for i,d in all_people if is_helper(d)] if self.mode=='helpers' else [(i,d) for i,d in all_people if 'International student' in roles(d)]
@@ -230,6 +261,7 @@ class Window(QMainWindow):
    name=d.get('First name','')+' '+d.get('Last name',''); vals=[person_id(i),name,', '.join(roles(d)),d.get('Email',''),d.get('Organization / affiliation') or d.get('University',''),d.get('Preferred language','')] if self.mode=='people' else [person_id(i),name,', '.join(roles(d)),d.get('Availability',''),d.get('Volunteer status','Pending'),f'{sum(h["hours"] for _,h in self.store.hours(i)):.2f}'] if self.mode=='helpers' else [student_id(i),name,d.get('University',''),d.get('Status','Initial contact'),d.get('Next action',''),d.get('Follow-up date','')]
    for c,v in enumerate(vals): self.table.setItem(r,c,QTableWidgetItem(v))
  def selected(self):
+  if self.pages.currentIndex()!=1: QMessageBox.information(self,'Select a person','Open the People registry or another people view and select a record first.'); return None
   r=self.table.currentRow()
   if r<0 or r>=len(self.rows): QMessageBox.information(self,'Select a person','Select a record first.'); return None
   return self.rows[r]
@@ -483,18 +515,55 @@ class Window(QMainWindow):
   s=self.selected()
   if s and QMessageBox.question(self,'Delete person','Permanently delete this person, all roles, student information, interaction history, mentor assignments, volunteer hours, committee memberships, program registrations, attendance, partner contacts and referrals? Existing backups will retain copies.')==QMessageBox.Yes: self.store.delete(s[0]); self.refresh()
  def backup(self):
-  from datetime import datetime
-  p=self.folder/'backups'; p.mkdir(exist_ok=True); target=p/('didar-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite'); self.store.backup(target); QMessageBox.information(self,'Backup created',str(target))
+  try: target=st.create_backup(self.store,self.folder)
+  except (OSError,sqlite3.Error,ValueError) as e: QMessageBox.critical(self,'Backup failed',str(e)); return
+  QMessageBox.information(self,'Backup created',str(target))
+ def storage_dialog(self):
+  dlg=QDialog(self); dlg.setWindowTitle('Database & backups'); dlg.resize(680,360); layout=QVBoxLayout(dlg); details=QLabel(); details.setWordWrap(True); details.setTextInteractionFlags(Qt.TextSelectableByMouse); layout.addWidget(details)
+  def update():
+   path=self.folder/'didar.sqlite'; copies=st.backups(self.folder); details.setText(f'Database: {path}\nDatabase file size: {path.stat().st_size:,} bytes\nBackups: {len(copies)}\nLatest backup: {copies[0].name if copies else "None"}\nAutomatic backup: once per day at successful login. No automatic deletion.\nPayloads are encrypted; metadata and report exports are not.')
+  def open_folder():
+   if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.folder))): QMessageBox.warning(dlg,'Cannot open folder',str(self.folder))
+  def restore():
+   path,_=QFileDialog.getOpenFileName(dlg,'Select a DIDAR backup',str(self.folder/'backups'),'SQLite (*.sqlite *.db *.sqlite3)')
+   if not path: return
+   if QMessageBox.question(dlg,'Restore database','This replaces all current records with the selected snapshot. A safety backup will be created first. Close all other DIDAR versions before continuing. Proceed?',QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes: return
+   try: safety=st.restore_backup(self.store,self.folder,path)
+   except (OSError,sqlite3.Error,ValueError,InvalidToken) as e: QMessageBox.critical(dlg,'Restore failed',str(e) or 'Backup authentication failed.'); return
+   self.search.clear(); self.refresh(); self.show_home(); update(); QMessageBox.information(dlg,'Restore complete','Previous database preserved at:\n'+str(safety))
+  for label,fn in [('Open database folder',open_folder),('Create backup',lambda:(self.backup(),update())),('Restore from backup',restore)]:
+   b=QPushButton(label); b.clicked.connect(fn); layout.addWidget(b)
+  close=QPushButton('Close'); close.clicked.connect(dlg.accept); layout.addWidget(close); update(); dlg.exec()
+
 
 def main():
- app=QApplication(sys.argv); app.setApplicationName('DIDAR Connect'); folder=Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)); folder.mkdir(parents=True,exist_ok=True); path=folder/'didar.sqlite'; new=not path.exists(); password,ok=QInputDialog.getText(None,'DIDAR Connect','Create a strong database passphrase (at least 12 characters):' if new else 'Enter database passphrase:',QLineEdit.Password)
- if not ok:return
- if new and len(password)<12: QMessageBox.warning(None,'Passphrase','Use at least 12 characters.'); return
- if new:
-  confirm,ok=QInputDialog.getText(None,'Confirm passphrase','Repeat passphrase:',QLineEdit.Password)
-  if not ok or confirm!=password: QMessageBox.warning(None,'Passphrase','Passphrases do not match.'); return
- try: store=Store(path,password)
- except InvalidToken: QMessageBox.critical(None,'Access denied','Incorrect passphrase.'); return
- app.setStyleSheet('QWidget {font-size:13px;} QMainWindow {background:#f5f7f8;} QLabel#brand {background:#07384B;color:white;padding:18px;font-size:22px;font-weight:bold;} QLabel#title {font-size:25px;font-weight:bold;color:#07384B;} QPushButton {padding:8px;border:1px solid #a9b9bf;border-radius:5px;} QPushButton:hover {background:#dcebed;} QLineEdit,QComboBox,QTextEdit {padding:7px;} QHeaderView::section {background:#07384B;color:white;padding:9px;}')
- window=Window(store,folder); window.show(); sys.exit(app.exec())
-if __name__=='__main__': main()
+ parser=argparse.ArgumentParser(description='DIDAR Connect'); parser.add_argument('--data-dir',help='Explicit local data directory (use a separate directory for dummy-data testing).'); args=parser.parse_args()
+ if os.name=='posix': os.umask(0o077)
+ app=QApplication([sys.argv[0]]); app.setApplicationName('DIDAR Connect'); app.setApplicationVersion('1.0.0')
+ try:
+  folder=st.data_folder(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation),Path.home(),sys.platform,args.data_dir); folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+ except (OSError,ValueError) as e: QMessageBox.critical(None,'Storage error',str(e)); return 1
+ lock=QLockFile(str(folder/'didar-connect.lock')); lock.setStaleLockTime(0)
+ if not lock.tryLock(0): QMessageBox.critical(None,'Database in use','Close the other DIDAR Connect V1.0 instance before opening this database.'); return 1
+ store=None
+ try:
+  path=folder/'didar.sqlite'; new=not path.exists()
+  if new and QMessageBox.question(None,'Create new database','No database was found at:\n'+str(path)+'\nCreate a new database here? If you expected existing records, cancel and check the path.',QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes: return 0
+  password,ok=QInputDialog.getText(None,'DIDAR Connect','Create a strong database passphrase (at least 12 characters):' if new else 'Enter database passphrase:',QLineEdit.Password)
+  if not ok:return 0
+  if new and len(password)<12: QMessageBox.warning(None,'Passphrase','Use at least 12 characters.'); return 1
+  if new:
+   confirm,ok=QInputDialog.getText(None,'Confirm passphrase','Repeat passphrase:',QLineEdit.Password)
+   if not ok or confirm!=password: QMessageBox.warning(None,'Passphrase','Passphrases do not match.'); return 1
+   del confirm
+  try: store=Store(path,password)
+  except (InvalidToken,sqlite3.Error,TypeError,ValueError) as e: QMessageBox.critical(None,'Access denied','Incorrect passphrase or database error. No new database will be created.'); return 1
+  finally: del password
+  try: st.daily_backup(store,folder)
+  except (OSError,sqlite3.Error,ValueError) as e: QMessageBox.warning(None,'Automatic backup failed',str(e)+'\nCreate a manual backup before making changes.')
+  app.setStyleSheet('QWidget {font-size:13px;} QMainWindow {background:#f5f7f8;} QLabel#brand {background:#07384B;color:white;padding:18px;font-size:22px;font-weight:bold;} QLabel#title {font-size:25px;font-weight:bold;color:#07384B;} QWidget#metric {background:white;border:1px solid #d7e1e4;border-radius:8px;} QLabel#metricValue {font-size:27px;font-weight:bold;color:#07384B;} QPushButton {padding:8px;border:1px solid #a9b9bf;border-radius:5px;} QPushButton:hover {background:#dcebed;} QLineEdit,QComboBox,QTextEdit {padding:7px;} QHeaderView::section {background:#07384B;color:white;padding:9px;}')
+  window=Window(store,folder); window.show(); return app.exec()
+ finally:
+  if store is not None: store.db.close()
+  lock.unlock()
+if __name__=='__main__': sys.exit(main())
