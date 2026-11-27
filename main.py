@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet,InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import base64
 import resource_directory as rd
+import impact_reports as ir
 
 FIELDS=['First name','Last name','Email','Phone','Country of origin (optional)','Preferred language','University','Department','Program','Academic level','Supervisor','Referral source','Referrer name','Referrer email','Referral date','Expected arrival','Consent','Status','Assigned mentor','Next action','Follow-up date','Needs / notes']
 NEEDS_GROUPS={
@@ -194,8 +195,8 @@ class HelperEditor(QDialog):
   self.accept()
 class Window(QMainWindow):
  def __init__(self,store,folder):
-  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.8'); self.resize(1250,750)
-  root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); side=QVBoxLayout(); outer.addLayout(side); brand=QLabel('DIDAR\nCONNECT'); brand.setObjectName('brand'); side.addWidget(brand)
+  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.9'); self.resize(1250,750)
+  root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); side_scroll=QScrollArea(); side_scroll.setWidgetResizable(True); side_scroll.setMinimumWidth(250); side_scroll.setMaximumWidth(320); side_panel=QWidget(); side=QVBoxLayout(side_panel); side_scroll.setWidget(side_panel); outer.addWidget(side_scroll); brand=QLabel('DIDAR\nCONNECT'); brand.setObjectName('brand'); side.addWidget(brand)
   for name,mode in [('People registry','people'),('International students','students'),('Volunteers & mentors','helpers')]:
    b=QPushButton(name); b.clicked.connect(lambda checked=False,m=mode:self.switch(m)); side.addWidget(b)
   self.helper_buttons=[]
@@ -208,6 +209,7 @@ class Window(QMainWindow):
   for label,kind in [('Institutional partners','partners'),('Partner contacts','partner_contacts'),('Institutional referrals','partner_referrals'),('Partner interactions','partner_interactions')]:
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
   resource=QPushButton('Community resources'); resource.clicked.connect(self.resource_dialog); side.addWidget(resource)
+  reports=QPushButton('Statistics & impact reports'); reports.clicked.connect(self.impact_dialog); side.addWidget(reports)
   storage=QPushButton('Database location'); storage.clicked.connect(lambda:QMessageBox.information(self,'Database location',str(self.folder/'didar.sqlite'))); side.addWidget(storage)
   side.addStretch(); backup=QPushButton('Create database backup'); backup.clicked.connect(self.backup); side.addWidget(backup)
   main=QVBoxLayout(); outer.addLayout(main,1); self.title=QLabel(); self.title.setObjectName('title'); main.addWidget(self.title); self.stats=QLabel(); main.addWidget(self.stats); bar=QHBoxLayout(); main.addLayout(bar); self.search=QLineEdit(); self.search.setPlaceholderText('Search name, ID, email, role…'); self.search.textChanged.connect(self.refresh); bar.addWidget(self.search,1)
@@ -432,6 +434,34 @@ class Window(QMainWindow):
   table.doubleClicked.connect(selected); search.textChanged.connect(refresh)
   for w in (category,university,audience,eligibility,status): w.currentTextChanged.connect(refresh)
   reload(); dlg.exec()
+ def impact_dialog(self):
+  dlg=QDialog(self); dlg.setWindowTitle('Statistics & impact reports'); dlg.resize(1120,720); layout=QVBoxLayout(dlg)
+  filters=QHBoxLayout(); layout.addLayout(filters); start=QLineEdit(); start.setPlaceholderText('YYYY-MM-DD or blank'); end=QLineEdit(); end.setPlaceholderText('YYYY-MM-DD or blank'); committee=QComboBox(); committee.addItem('All committees',None)
+  for i,d in self.store.records('committees'): committee.addItem(d.get('Name','')+f' — COM-{i:06d}',i)
+  for label,w in [('From',start),('To',end),('Committee',committee)]: filters.addWidget(QLabel(label)); filters.addWidget(w)
+  notice=QLabel(ir.NOTICE); notice.setWordWrap(True); layout.addWidget(notice)
+  summary=QLabel(); summary.setWordWrap(True); layout.addWidget(summary)
+  table=QTableWidget(0,3); table.setHorizontalHeaderLabels(['Section','Indicator','Value']); table.horizontalHeader().setSectionResizeMode(0,QHeaderView.ResizeToContents); table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.ResizeToContents); table.setEditTriggers(QAbstractItemView.NoEditTriggers); layout.addWidget(table)
+  definitions=QTextEdit(); definitions.setReadOnly(True); definitions.setPlainText(ir.METHOD); definitions.setMaximumHeight(125); layout.addWidget(definitions)
+  def refresh():
+   report=ir.build_report(self.store,start.text().strip(),end.text().strip(),committee.currentData()); summary.setText(report['period']+' | '+report['scope']); table.setRowCount(len(report['rows']))
+   for r,(section,metric,value) in enumerate(report['rows']):
+    for c,v in enumerate((section,metric,f'{value:,.2f}' if isinstance(value,float) else str(value))): table.setItem(r,c,QTableWidgetItem(v))
+   return report
+  def action(kind):
+   try:
+    report=refresh()
+    if kind=='refresh': return
+    if QMessageBox.question(dlg,'Confidential aggregate report',ir.NOTICE+' Export for internal use?')!=QMessageBox.Yes:return
+    ext='xlsx' if kind=='excel' else 'pdf'; path,_=QFileDialog.getSaveFileName(dlg,'Save internal report',f'didar-impact-{date.today().isoformat()}.{ext}',f'{ext.upper()} (*.{ext})')
+    if path:
+     if not path.lower().endswith('.'+ext): path+='.'+ext
+     (ir.export_excel if kind=='excel' else ir.export_pdf)(path,report); QMessageBox.information(dlg,'Report saved',path)
+   except Exception as e: QMessageBox.warning(dlg,'Report failed',str(e))
+  bar=QHBoxLayout(); layout.addLayout(bar)
+  for label,kind in [('Refresh report','refresh'),('Export Excel','excel'),('Export PDF','pdf')]:
+   b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:action(k)); bar.addWidget(b)
+  action('refresh'); dlg.exec()
  def open_case(self):
   s=self.selected()
   if s:

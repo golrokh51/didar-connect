@@ -56,3 +56,28 @@ with tempfile.TemporaryDirectory() as temp:
  out=pathlib.Path(temp)/'public.json'; assert rd.export_public(out,db.resources())==1; assert 'SECRET DUMMY' not in out.read_text() and 'Private dummy' not in out.read_text()
  db.backup(pathlib.Path(temp)/'backup.sqlite'); copy=Store(pathlib.Path(temp)/'backup.sqlite','dummy-password-123'); assert copy.resources()==db.resources(); copy.db.close(); db.db.close()
 print('PASS: resource migration, duplicate guard, CSV/XLSX import, publication defaults, public export isolation and backup')
+
+# V0.9: aggregation semantics, scope, export isolation and no writes.
+import impact_reports as ir
+with tempfile.TemporaryDirectory() as temp:
+ p=pathlib.Path(temp)/'test.sqlite'; db=Store(p,'dummy-password-123')
+ student=db.save({'First name':'SECRET STUDENT','Last name':'Private','Email':'private@example.test','Roles':['International student'],'Referral date':'2026-11-26','Selected needs':['Peer mentorship','SECRET NEED'],'Status':'Active accompaniment'})
+ mentor=db.save({'First name':'SECRET MENTOR','Roles':['Volunteer','Peer mentor']}); other=db.save({'Roles':['Participant']})
+ c=db.save_record('committees',[],{'Name':'SECRET COMMITTEE'}); c2=db.save_record('committees',[],{'Name':'Other committee'}); pr=db.save_record('programs',[c],{'Name':'SECRET PROGRAM'}); pr2=db.save_record('programs',[c2],{'Name':'Other program'})
+ for program,day,status,cost,persons in [(pr,'2026-11-26','Completed','10.50',[(student,'Participant'),(mentor,'Volunteer')]),(pr,'2026-11-27','Completed','5.25',[(student,'Participant')]),(pr2,'2026-11-27','Completed','4',[(other,'Participant')]),(None,'2026-11-27','Cancelled','99',[(other,'Participant')]),(pr,'2026-12-01','Completed','100',[(other,'Participant')])]:
+  a=db.save_activity(program,{'Name':'SECRET ACTIVITY','Date':day,'Status':status,'Expenses (CAD)':cost})
+  for person,role in persons: db.save_attendance(a,person,{'Status':'Attended','Role':role})
+ db.save_record('registrations',[pr,student],{'Role':'Participant','Status':'Active','Start date':'2026-11-26'}); db.log(student,{'date':'2026-11-26','type':'Video call','note':'SECRET NOTE'}); db.save_hours(mentor,{'date':'2026-11-27','hours':2.5}); org=db.save_record('partners',[],{'Name':'SECRET ORG'}); db.save_record('partner_referrals',[org,student],{'Date':'2026-11-26','Direction':'Incoming'})
+ before=db.db.total_changes; r=ir.build_report(db,'2026-11-26','2026-11-27'); vals={(s,m):v for s,m,v in r['rows']}
+ assert vals['Attendance','Unique participant attendees']==2 and vals['Attendance','Attended records at completed activities']==4 and vals['Attendance','Unique attendees (all roles)']==3
+ assert vals['Expenses','Recorded completed-activity expenses (CAD)']==19.75 and vals['Volunteer contribution','Logged volunteer hours']==2.5 and vals['Reach','Unique participant attendees or contacted students']==2
+ assert vals['Identified needs','Peer mentorship']==1 and vals['Institutional referrals','Incoming']==1 and vals['Programs','Registrations started in period (all roles/statuses)']==1
+ scoped=ir.build_report(db,'2026-11-26','2026-11-27',c); sv={(s,m):v for s,m,v in scoped['rows']}; assert sv['Attendance','Unique participant attendees']==1 and sv['Expenses','Recorded completed-activity expenses (CAD)']==15.75; assert not any(s in ('Current registry','Student cohort','Volunteer contribution','Institutional referrals') for s,m,v in scoped['rows'])
+ assert db.db.total_changes==before and 'SECRET' not in str(r) and 'private@example.test' not in str(r)
+ for start,end in [('2026-12-01','2026-11-01'),('invalid','')]:
+  try: ir.build_report(db,start,end); raise AssertionError('bad date range accepted')
+  except ValueError: pass
+ x=pathlib.Path(temp)/'report.xlsx'; pdf=pathlib.Path(temp)/'report.pdf'; ir.export_excel(x,r); ir.export_pdf(pdf,r)
+ from openpyxl import load_workbook
+ w=load_workbook(x,read_only=True); assert w.sheetnames==['Impact statistics','Definitions']; assert not any('SECRET' in str(v) or 'private@example.test' in str(v) for sheet in w for row in sheet.values for v in row); w.close(); assert pdf.read_bytes().startswith(b'%PDF-'); db.db.close()
+print('PASS: impact reports, date range, committee scope, deduplication, expenses, read-only aggregation and Excel/PDF export')

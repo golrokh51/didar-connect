@@ -1,4 +1,4 @@
-# DIDAR Connect V0.8
+# DIDAR Connect V0.9
 Single-user, offline student accompaniment prototype. Python 3.10–3.13 recommended.
 
 ## macOS
@@ -49,3 +49,13 @@ Back up V0.6 and close it before replacing main.py, README.md and test_store.py.
 
 ## V0.8 — Community resource directory
 Back up V0.7 and close it. Copy main.py, resource_directory.py, README.md, requirements.txt and test_store.py into your existing project. Install updated dependencies (`python -m pip install -r requirements.txt`). The database path/passphrase are unchanged; a new encrypted-payload resources table is created automatically. Community resources supports search, category/university/status and audience eligibility filters, add/edit, CSV template, CSV and XLSX import (first active worksheet, exact template headers), and public JSON export. Imports validate all rows before insertion, skip duplicates by name/category/university and always disable publication. Use Unknown rather than guessing eligibility. Public export includes only active records with a verification date and explicit Publish=Yes, excludes internal notes and does not read participant data. Review all public fields for personal information and verify facts before publishing; no automatic website upload or live eligibility verification. Archive outdated resources. Existing files with different headers require manual mapping to the template. Run python test_store.py; Qt GUI testing is still required.
+
+
+## V0.9 — Statistics and impact reports
+Back up the previous database and close the application. Copy main.py, impact_reports.py (new), resource_directory.py, requirements.txt, README.md and test_store.py into your project, preserving .git, .gitignore and .venv. Install updated dependencies with `python -m pip install -r requirements.txt`, then run `python test_store.py` and `python main.py`. No database schema changes.
+
+Open Statistics & impact reports. Leave either date blank for an unbounded period, or select inclusive YYYY-MM-DD dates. Select all committees or one committee; refresh and export the same filtered aggregate report as XLSX or PDF. Committee filtering applies only to program-linked activities and registrations; student, volunteer, institutional and global snapshot statistics are deliberately omitted for committee reports because those records lack reliable committee links. Independent activities are included only in the all-committee view.
+
+Definitions are included in exports: count attended records only at completed activities, deduplicate people for unique counts, distinguish registrations from attendance, count student contacts from documented interactions, and treat student needs and case statuses as current values for the referral-date cohort. Undated period records are excluded. Current registry snapshots ignore date filters. Expenses use recorded completed-activity totals only. Volunteer hours are independently logged, not inferred. Reports include fixed indicators and program/committee IDs, not names or notes.
+
+Exports are unencrypted internal aggregate reports, not certified anonymous: small counts, dates and program identifiers may permit re-identification. Do not publish or share externally without disclosure review. No automatic suppression or historical reconstruction of deleted or changed records. No new personal fields collected. No GUI runtime testing in the build environment; test using a separate dummy database before live use.
