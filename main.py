@@ -11,6 +11,8 @@ import base64
 import resource_directory as rd
 import impact_reports as ir
 import storage_tools as st
+import support_cases as sc
+import support_ui as su
 
 FIELDS=['First name','Last name','Email','Phone','Country of origin (optional)','Preferred language','University','Department','Program','Academic level','Supervisor','Referral source','Referrer name','Referrer email','Referral date','Expected arrival','Consent','Status','Assigned mentor','Next action','Follow-up date','Needs / notes']
 NEEDS_GROUPS={
@@ -18,7 +20,7 @@ NEEDS_GROUPS={
  'Administrative & essential services':['University registration','Administrative procedures','Health insurance and healthcare','Banking and mobile phone services'],
  'Language & practical support':['French language support','English language support','Digital and technological support','Financial resources'],
  'Integration & mentorship':['Social and cultural integration','Peer mentorship','Academic integration','Community activities','Referral to specialized services']}
-ROLES=['International student','Newcomer','Volunteer','Peer mentor','Committee member','Participant','Staff / coordinator','Partner contact','Other']
+ROLES=['International student','Newcomer','Volunteer','Peer mentor','Committee member','Participant','Staff / coordinator','Partner contact','Support recipient','Community member','Supporter','Donor','Other']
 def roles(data):
  return data.get('Roles',['International student'])
 def person_id(i): return f'DIDAR-P-{i:06d}'
@@ -46,6 +48,7 @@ class Store:
   self.db.executescript("CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY AUTOINCREMENT, program_id INTEGER REFERENCES programs(id), payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL REFERENCES activities(id), person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL, UNIQUE(activity_id,person_id));")
   self.db.executescript("CREATE TABLE IF NOT EXISTS partners(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS partner_contacts(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(partner_id,person_id)); CREATE TABLE IF NOT EXISTS partner_referrals(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS partner_interactions(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),payload BLOB NOT NULL);")
   self.db.execute('CREATE TABLE IF NOT EXISTS resources(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL)'); self.db.commit()
+  sc.init(self)
  def resources(self):
   return [(i,self.dec(p)) for i,p in self.db.execute('SELECT id,payload FROM resources ORDER BY id')]
  def save_resource(self,data,i=None):
@@ -169,13 +172,16 @@ class PersonEditor(QDialog):
   super().__init__(parent); self.original=data.copy(); self.setWindowTitle('Central person profile'); self.resize(600,650); layout=QVBoxLayout(self); form=QFormLayout(); layout.addLayout(form); self.inputs={}
   for f in FIELDS[:6]+['Organization / affiliation','Personal notes']:
    w=QTextEdit() if f=='Personal notes' else QLineEdit(); (w.setPlainText if isinstance(w,QTextEdit) else w.setText)(data.get(f,'')); self.inputs[f]=w; form.addRow(f,w)
+  self.inputs['Personal notes'].setPlaceholderText('General notes only. Keep sensitive support circumstances in Support cases.')
+  self.engagement=QComboBox(); self.engagement.addItems(sc.ENGAGEMENT); self.engagement.setCurrentText(data.get('Reason for engagement','Not specified')); form.addRow('Reason for engagement (optional)',self.engagement)
   layout.addWidget(QLabel('Roles — select all that apply')); self.checks={}
+  role_scroll=QScrollArea(); role_scroll.setWidgetResizable(True); role_panel=QWidget(); role_layout=QVBoxLayout(role_panel); role_scroll.setWidget(role_panel); layout.addWidget(role_scroll,1)
   for role in ROLES:
-   cb=QCheckBox(role); cb.setChecked(role in roles(data)); self.checks[role]=cb; layout.addWidget(cb)
+   cb=QCheckBox(role); cb.setChecked(role in roles(data)); self.checks[role]=cb; role_layout.addWidget(cb)
    if role=='International student' and role in roles(data): cb.setEnabled(False); cb.setToolTip('Existing student case is retained. Close it in the student module when appropriate.')
   buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); buttons.accepted.connect(self.validate); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
  def values(self):
-  d=self.original.copy(); d.update({f:w.toPlainText() if isinstance(w,QTextEdit) else w.text().strip() for f,w in self.inputs.items()}); d['Roles']=[r for r,w in self.checks.items() if w.isChecked()]; return d
+  d=self.original.copy(); d.update({f:w.toPlainText() if isinstance(w,QTextEdit) else w.text().strip() for f,w in self.inputs.items()}); d['Roles']=[r for r,w in self.checks.items() if w.isChecked()]; d['Reason for engagement']=self.engagement.currentText(); return d
  def validate(self):
   d=self.values()
   if not d['First name'] or not d['Last name'] or not d['Roles']: QMessageBox.warning(self,'Missing information','Enter first and last name and select at least one role.'); return
@@ -206,11 +212,12 @@ class HelperEditor(QDialog):
   self.accept()
 class Window(QMainWindow):
  def __init__(self,store,folder):
-  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v1.0'); self.resize(1250,750)
+  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v1.1'); self.resize(1250,750)
   root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); side_scroll=QScrollArea(); side_scroll.setWidgetResizable(True); side_scroll.setMinimumWidth(250); side_scroll.setMaximumWidth(320); side_panel=QWidget(); side=QVBoxLayout(side_panel); side_scroll.setWidget(side_panel); outer.addWidget(side_scroll); brand=QLabel('DIDAR\nCONNECT'); brand.setObjectName('brand'); side.addWidget(brand)
   home=QPushButton('Home / dashboard'); home.clicked.connect(self.show_home); side.addWidget(home)
   for name,mode in [('People registry','people'),('International students','students'),('Volunteers & mentors','helpers')]:
    b=QPushButton(name); b.clicked.connect(lambda checked=False,m=mode:self.switch(m)); side.addWidget(b)
+  support=QPushButton('Individual support & accompaniment'); support.clicked.connect(lambda:su.open_cases(self,self.store)); side.addWidget(support)
   self.helper_buttons=[]
   for label,fn in [('Add helper role to selected person',self.helper_role),('Mentor assignments',self.assignment_dialog),('Volunteer hours',self.hours_dialog)]:
    b=QPushButton(label); b.clicked.connect(fn); side.addWidget(b); self.helper_buttons.append(b)
@@ -229,6 +236,7 @@ class Window(QMainWindow):
   self.filter=QComboBox(); self.filter.addItems(['All roles']+ROLES); self.filter.currentTextChanged.connect(self.refresh); bar.addWidget(self.filter)
   self.add_button=QPushButton(); self.add_button.clicked.connect(self.add); bar.addWidget(self.add_button)
   self.case_button=QPushButton('Open / add student profile'); self.case_button.clicked.connect(self.open_case); bar.addWidget(self.case_button)
+  self.support_button=QPushButton('Support cases'); self.support_button.clicked.connect(self.open_support); bar.addWidget(self.support_button)
   for text,fn in [('Edit profile',self.edit),('Log interaction',self.log),('History',self.history),('Delete',self.delete)]:
    b=QPushButton(text); b.clicked.connect(fn); bar.addWidget(b)
   self.table=QTableWidget(0,6); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.SingleSelection); self.table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.doubleClicked.connect(self.edit); main.addWidget(self.table); self.build_home(); self.switch('people'); self.show_home()
@@ -251,7 +259,7 @@ class Window(QMainWindow):
   for label,value in zip(self.home_labels.values(),values): label.setText(str(value))
   self.pages.setCurrentIndex(0)
  def switch(self,mode):
-  self.pages.setCurrentIndex(1); self.mode=mode; people=mode=='people'; helper=mode=='helpers'; self.title.setText({'people':'Central people registry','students':'International student accompaniment','helpers':'Volunteers & mentors'}[mode]); self.add_button.setText({'people':'Add person','students':'Add student','helpers':'Add volunteer / mentor'}[mode]); self.case_button.setVisible(people); self.filter.setVisible(people); self.search.clear(); self.table.setHorizontalHeaderLabels(['Person ID','Name','Roles','Email','Affiliation','Language'] if people else ['Person ID','Name','Roles','Availability','Status','Total hours'] if helper else ['Student ID','Name','University','Status','Next action','Follow-up']); self.refresh()
+  self.pages.setCurrentIndex(1); self.mode=mode; people=mode=='people'; helper=mode=='helpers'; self.title.setText({'people':'Central people registry','students':'International student accompaniment','helpers':'Volunteers & mentors'}[mode]); self.add_button.setText({'people':'Add person','students':'Add student','helpers':'Add volunteer / mentor'}[mode]); self.case_button.setVisible(people); self.support_button.setVisible(people); self.filter.setVisible(people); self.search.clear(); self.table.setHorizontalHeaderLabels(['Person ID','Name','Roles','Email','Affiliation','Language'] if people else ['Person ID','Name','Roles','Availability','Status','Total hours'] if helper else ['Student ID','Name','University','Status','Next action','Follow-up']); self.refresh()
  def refresh(self,*args):
   if not hasattr(self,'table'): return
   all_people=self.store.people(); people=all_people if self.mode=='people' else [(i,d) for i,d in all_people if is_helper(d)] if self.mode=='helpers' else [(i,d) for i,d in all_people if 'International student' in roles(d)]
@@ -494,6 +502,9 @@ class Window(QMainWindow):
   for label,kind in [('Refresh report','refresh'),('Export Excel','excel'),('Export PDF','pdf')]:
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:action(k)); bar.addWidget(b)
   action('refresh'); dlg.exec()
+ def open_support(self):
+  selected=self.selected()
+  if selected: su.open_cases(self,self.store,selected[0])
  def open_case(self):
   s=self.selected()
   if s:
@@ -513,7 +524,7 @@ class Window(QMainWindow):
   dlg=QDialog(self); dlg.setWindowTitle('Interaction history'); dlg.resize(650,450); v=QVBoxLayout(dlg); t=QTextEdit(); t.setReadOnly(True); t.setPlainText('\n\n'.join(f"{x['date']} — {x['type']}\n{x['note']}" for x in self.store.history(s[0])) or 'No interactions yet.'); v.addWidget(t); dlg.exec()
  def delete(self):
   s=self.selected()
-  if s and QMessageBox.question(self,'Delete person','Permanently delete this person, all roles, student information, interaction history, mentor assignments, volunteer hours, committee memberships, program registrations, attendance, partner contacts and referrals? Existing backups will retain copies.')==QMessageBox.Yes: self.store.delete(s[0]); self.refresh()
+  if s and QMessageBox.question(self,'Delete person','Permanently delete this person, all roles, student information, interaction history, mentor assignments, volunteer hours, committee memberships, program registrations, attendance, partner contacts, referrals and confidential support cases? Existing backups will retain copies.')==QMessageBox.Yes: self.store.delete(s[0]); self.refresh()
  def backup(self):
   try: target=st.create_backup(self.store,self.folder)
   except (OSError,sqlite3.Error,ValueError) as e: QMessageBox.critical(self,'Backup failed',str(e)); return
@@ -539,12 +550,12 @@ class Window(QMainWindow):
 def main():
  parser=argparse.ArgumentParser(description='DIDAR Connect'); parser.add_argument('--data-dir',help='Explicit local data directory (use a separate directory for dummy-data testing).'); args=parser.parse_args()
  if os.name=='posix': os.umask(0o077)
- app=QApplication([sys.argv[0]]); app.setApplicationName('DIDAR Connect'); app.setApplicationVersion('1.0.0')
+ app=QApplication([sys.argv[0]]); app.setApplicationName('DIDAR Connect'); app.setApplicationVersion('1.1.0')
  try:
   folder=st.data_folder(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation),Path.home(),sys.platform,args.data_dir); folder.mkdir(mode=0o700,parents=True,exist_ok=True)
  except (OSError,ValueError) as e: QMessageBox.critical(None,'Storage error',str(e)); return 1
  lock=QLockFile(str(folder/'didar-connect.lock')); lock.setStaleLockTime(0)
- if not lock.tryLock(0): QMessageBox.critical(None,'Database in use','Close the other DIDAR Connect V1.0 instance before opening this database.'); return 1
+ if not lock.tryLock(0): QMessageBox.critical(None,'Database in use','Close the other DIDAR Connect instance before opening this database.'); return 1
  store=None
  try:
   path=folder/'didar.sqlite'; new=not path.exists()

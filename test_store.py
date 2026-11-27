@@ -4,6 +4,7 @@ from contextlib import closing
 from pathlib import Path
 from datetime import date
 import resource_directory as rd
+import support_cases as sc
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
@@ -124,3 +125,31 @@ with tempfile.TemporaryDirectory() as temp:
  except sqlite3.Error: pass
  db.db.close()
 print('PASS: data path, daily backup, authenticated restore, pre-restore safety snapshot and invalid backup rejection')
+
+# V1.1: migration, confidential case separation, consent, services and recovery.
+with tempfile.TemporaryDirectory() as temp:
+ folder=Path(temp).resolve(); path=folder/'didar.sqlite'; db=Store(path,'dummy-password-123')
+ person=db.save({'First name':'Fictional','Last name':'Person','Roles':['Participant']}); coordinator=db.save({'First name':'Dummy','Roles':['Staff / coordinator']}); committee=db.save_record('committees',[],{'Name':'Test committee'})
+ db.db.execute('DROP TABLE support_cases'); db.db.commit(); db.db.close() # exact previous schema
+ db=Store(path,'dummy-password-123'); assert not sc.records(db)
+ original=dict(db.people()); report=ir.build_report(db)
+ pending=sc.blank(); first=sc.save(db,person,pending); assert sc.records(db,person)[0][0]==first
+ for invalid in [dict(pending,Circumstances=['Domestic or intimate partner violence']),dict(pending,**{'Safe contact':'Email'}),dict(pending,**{'Sharing consent':'Granted'}),dict(pending,Status='Completed')]:
+  try: sc.save(db,person,invalid,first); raise AssertionError('invalid or unauthorized record accepted')
+  except ValueError: pass
+ d=dict(pending,Consent='Granted',Circumstances=['Domestic or intimate partner violence'],Needs=['Referral to qualified legal services'],Notes='SECRET DUMMY CASE',Services=[{'Date':'2026-11-27','Need':'Referral to qualified legal services','Status':'Referred','Resource / organization':'Dummy organization','Outcome / notes':'SECRET SERVICE'}],History=[{'Date':'2026-11-27','Type':'Consultation','Outcome / notes':'SECRET HISTORY'}],**{'Consent date':'2026-11-27','Safe contact':'Phone call','Voicemail allowed':False,'Sharing consent':'Granted','Sharing scope':'Dummy recipient only','Committee ID':committee,'Coordinator ID':coordinator})
+ sc.save(db,person,d,first); second=sc.save(db,person,pending); assert first!=second and len(sc.records(db,person))==2
+ assert dict(db.people())==original and db.history(person)==[] and ir.build_report(db)==report
+ assert 'SECRET' not in str(db.db.execute('SELECT payload FROM support_cases').fetchall()); assert b'SECRET DUMMY CASE' not in path.read_bytes()
+ assert sc.private_summary(db)['All cases']=='Suppressed (1–4)'
+ for invalid in [dict(d,**{'Consent date':''}),dict(d,**{'Sharing scope':''}),dict(d,**{'Safe contact':'SMS','Voicemail allowed':True}),dict(d,Circumstances=['Not yet assessed','Domestic or intimate partner violence'])]:
+  try: sc.save(db,person,invalid,first); raise AssertionError('invalid case accepted')
+  except ValueError: pass
+ withdrawn=dict(d,Consent='Withdrawn',**{'Sharing consent':'Withdrawn','Safe contact':'No contact authorized','Voicemail allowed':False})
+ sc.save(db,person,withdrawn,first)
+ try: sc.save(db,person,dict(withdrawn,Notes='new detail'),first); raise AssertionError('new sensitive data after withdrawal accepted')
+ except ValueError: pass
+ snapshot=st.create_backup(db,folder); sc.delete(db,first); assert len(sc.records(db))==1
+ st.restore_backup(db,folder,snapshot); assert len(sc.records(db))==2 and sc.records(db)[0][2]['Notes']=='SECRET DUMMY CASE'
+ db.delete(person); assert not sc.records(db); db.db.close()
+print('PASS: confidential support case migration, consent and contact checks, multiple cases, service/history separation, report isolation, backup/restore and cascade deletion')

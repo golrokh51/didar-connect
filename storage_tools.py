@@ -74,7 +74,7 @@ def restore_backup(store, folder, source):
         if candidate.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
             raise ValueError('The backup failed the SQLite integrity check.')
         if schema(candidate) != schema(store.db):
-            raise ValueError('Backup schema differs. Restore only a compatible V0.9/V1.0 snapshot using this interface.')
+            raise ValueError('Backup schema differs. Restore only a snapshot with the same schema as this application. Keep older backups for version-specific recovery.')
         if candidate.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('The backup contains invalid relationships.')
         if candidate.execute("SELECT v FROM config WHERE k='salt'").fetchone() != store.db.execute("SELECT v FROM config WHERE k='salt'").fetchone():

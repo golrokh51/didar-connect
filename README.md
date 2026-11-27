@@ -1,5 +1,23 @@
-# DIDAR Connect V1.0 — macOS release candidate
+# DIDAR Connect V1.1 — Individual support & case management
 Single-user, offline community management system. Python 3.10–3.13 recommended. This source release is not a prebuilt or notarized application and is not security-audited.
+
+
+## V1.1 update (macOS)
+
+- Close all DIDAR versions. In V1.0 first create a manual backup, record the database path and keep a protected second copy. Create a Git feature branch from your V1.0 release.
+- Copy `main.py`, `support_cases.py`, `support_ui.py`, `storage_tools.py`, `test_store.py`, and `README.md` to the existing project. Dependencies, icon, build script and database location are unchanged. Do not replace `.git`, `.gitignore`, `.venv` or the external database.
+- Run `python test_store.py` (eight PASS groups expected). Then run `python main.py --data-dir "$HOME/DIDAR-Connect-test-v1.1"` and test only with fictional records. When ready, `bash build_macos.sh`, test `open -n "dist/DIDAR Connect.app" --args --data-dir "$HOME/DIDAR-Connect-test-v1.1"`, and replace the installed app only after closing it. Verify the real database path and original passphrase before production use. Never use old and new app versions on the same database.
+- One new table `support_cases` is created at first authenticated launch. Existing records are not rewritten. Older V1.0 backups cannot be restored via the V1.1 same-schema restore UI; retain them for rollback with V1.0 (close all versions and restore to a separate directory, never discard a live database). Make a fresh V1.1 backup after migration.
+
+### Using the module
+
+Register a person as usual. New optional general roles: Support recipient, Community member, Supporter, Donor. Reason for engagement is optional and non-sensitive. Do not label people by abuse, disability or other sensitive experiences. Support recipient is not automatically assigned; it remains visible in the general registry if selected. Use a general role such as Participant if appropriate.
+
+Select the person in People Registry and click **Support cases**, or use **Individual support & accompaniment** in the sidebar. New support case creates a separate case ID. Select a committee and coordinator if appropriate, record dates/status, document consent and its date before adding sensitive details, then select relevant self-reported circumstances and needs. Use the Services & referrals and Follow-up history tabs to track assistance. Save the case after editing entries. Multiple cases may link to one person. Safe contact defaults to no contact authorized, and voicemail defaults to disallowed. Sharing consent is separate and requires a scope. Withdraw consent by revoking contact and sharing permissions; previously recorded details are retained until corrected/deleted according to policy. No automatic messages, transfers or referrals occur.
+
+### Privacy and limitations
+
+All case content, including categories, committee/coordinator references, services and history, is stored in an authenticated encrypted payload using the existing database key. Person-to-case linkage, identifiers, timestamps implicit in encryption tokens and record counts are not encrypted. Case records are excluded from general person search, ordinary interaction history, public directory export and existing impact reports. The case module offers an internal aggregate summary with counts 1–4 suppressed, not an anonymity guarantee. Existing general report data is unchanged; never put sensitive details in general notes or other modules. There is no separate case password, access control by role, access audit log, automatic inactivity lock, automated retention or case-specific public reporting. The manual Lock & close action remains. Deleting a case removes its services/history from the live DB; deleting a person cascades to their cases; earlier backups retain copies. Deletion is not guaranteed forensic erasure. Review consent, retention and confidentiality procedures before using real sensitive information. Enable FileVault, keep protected backups and complete an independent security/privacy review. GUI and macOS bundle need local validation. This is not an emergency service or professional legal/clinical record system.
 
 ## V1.0 quick start (macOS)
 
