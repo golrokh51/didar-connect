@@ -1,4 +1,4 @@
-# DIDAR Connect V0.5
+# DIDAR Connect V0.6
 Single-user, offline student accompaniment prototype. Python 3.10–3.13 recommended.
 
 ## macOS
@@ -40,3 +40,6 @@ Back up and close the previous version, then replace main.py. No new dependencie
 - Database location: displays the exact local SQLite file path.
 
 No real records are preloaded. One membership per person per committee and one registration per person per program; edit these to change status or role. Roles added to the central profile are retained as historical roles. Each program belongs to one committee. Archive committees/programs using status; no destructive organization deletion is offered. Registration consent is tracked, not enforced as a workflow gate. Personal payloads are encrypted; relationship IDs and schema are not. No automatic synchronization with website, student cases or volunteer hours. Test GUI with dummy data before real use. Headless tests: python test_store.py (run from this folder).
+
+## V0.6 — Activities and attendance
+Back up V0.5, close it, replace main.py, README.md and test_store.py. No new dependencies. Two additional tables are created automatically. Activities can be independent or associated with a program. Enter date, times (HH:MM), location, type, status, series label, objectives, expense amount and evaluation notes. Create one activity per occurrence; series labels group recurring activities conceptually, not automatic scheduling. Attendance links existing people to activities and records role, registration/attendance status and consent. Duplicate person/activity pairs are prevented. Volunteer hours remain in the existing separate module; no automatic synchronization. Expenses are a single total field, not accounting records. Consent is tracked but not enforced. No anonymous attendance counts or exports yet. Payload encryption and existing storage limitations remain unchanged. Run python test_store.py; GUI requires testing with dummy data before real use.
