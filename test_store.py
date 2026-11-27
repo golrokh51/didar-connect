@@ -1,6 +1,7 @@
 """Headless storage tests; no real records or Qt required."""
 import ast, pathlib, tempfile, sqlite3, os, json, base64
 from datetime import date
+import resource_directory as rd
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
@@ -42,3 +43,16 @@ with tempfile.TemporaryDirectory() as temp:
   except ValueError: pass
  db.backup(pathlib.Path(temp)/'copy.sqlite'); copy=Store(pathlib.Path(temp)/'copy.sqlite','dummy-password-123'); assert copy.records('partner_referrals')==db.records('partner_referrals'); copy.db.close(); db.delete(person); assert not db.records('partner_contacts') and not db.records('partner_referrals') and db.records('partners') and db.records('partner_interactions'); db.db.close()
 print('PASS: partner schema migration, contacts, referrals, interactions, validation, backup and cascade deletion')
+with tempfile.TemporaryDirectory() as temp:
+ p=pathlib.Path(temp)/'test.sqlite'; db=Store(p,'dummy-password-123'); person=db.save({'First name':'Private dummy','Last name':'Person'}); db.db.execute('DROP TABLE resources'); db.db.commit(); db.db.close(); db=Store(p,'dummy-password-123'); assert db.people()[0][0]==person
+ d={'Name':'Dummy service','Category':'Housing','International students':'Yes','Status':'Active','Last verified':'2026-11-26','Publish':'Yes','Internal notes':'SECRET DUMMY'}; i=db.save_resource(d); assert db.resources()[0][0]==i
+ try: db.save_resource(d); raise AssertionError('duplicate accepted')
+ except ValueError: pass
+ assert db.import_resources([d,{'Name':'Other service','Category':'Legal','Publish':'Yes'}])==(1,1)
+ assert db.resources()[1][1]['Publish']=='No'
+ from openpyxl import Workbook
+ w=Workbook(); w.active.append(['Name','Category']); w.active.append(['Excel service','Language']); x=pathlib.Path(temp)/'sample.xlsx'; w.save(x); assert db.import_resources(rd.read_rows(x))==(1,0)
+ c=pathlib.Path(temp)/'sample.csv'; c.write_text('Name,Category\nCSV service,Education\n'); assert db.import_resources(rd.read_rows(c))==(1,0)
+ out=pathlib.Path(temp)/'public.json'; assert rd.export_public(out,db.resources())==1; assert 'SECRET DUMMY' not in out.read_text() and 'Private dummy' not in out.read_text()
+ db.backup(pathlib.Path(temp)/'backup.sqlite'); copy=Store(pathlib.Path(temp)/'backup.sqlite','dummy-password-123'); assert copy.resources()==db.resources(); copy.db.close(); db.db.close()
+print('PASS: resource migration, duplicate guard, CSV/XLSX import, publication defaults, public export isolation and backup')

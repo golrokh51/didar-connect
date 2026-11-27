@@ -1,11 +1,12 @@
 import sys, json, sqlite3, os
 from pathlib import Path
 from datetime import date
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLineEdit,QComboBox,QTextEdit,QPushButton,QLabel,QTableWidget,QTableWidgetItem,QTabWidget,QMessageBox,QDialog,QDialogButtonBox,QAbstractItemView,QHeaderView,QInputDialog,QCheckBox,QScrollArea,QDoubleSpinBox)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLineEdit,QComboBox,QTextEdit,QPushButton,QLabel,QTableWidget,QTableWidgetItem,QTabWidget,QMessageBox,QDialog,QDialogButtonBox,QAbstractItemView,QHeaderView,QInputDialog,QCheckBox,QScrollArea,QDoubleSpinBox,QFileDialog)
 from PySide6.QtCore import Qt,QStandardPaths
 from cryptography.fernet import Fernet,InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import base64
+import resource_directory as rd
 
 FIELDS=['First name','Last name','Email','Phone','Country of origin (optional)','Preferred language','University','Department','Program','Academic level','Supervisor','Referral source','Referrer name','Referrer email','Referral date','Expected arrival','Consent','Status','Assigned mentor','Next action','Follow-up date','Needs / notes']
 NEEDS_GROUPS={
@@ -32,6 +33,26 @@ class Store:
   self.db.executescript("CREATE TABLE IF NOT EXISTS committees(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY AUTOINCREMENT,committee_id INTEGER NOT NULL REFERENCES committees(id),payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS memberships(id INTEGER PRIMARY KEY AUTOINCREMENT,committee_id INTEGER NOT NULL REFERENCES committees(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(committee_id,person_id)); CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,program_id INTEGER NOT NULL REFERENCES programs(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(program_id,person_id));")
   self.db.executescript("CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY AUTOINCREMENT, program_id INTEGER REFERENCES programs(id), payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL REFERENCES activities(id), person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL, UNIQUE(activity_id,person_id));")
   self.db.executescript("CREATE TABLE IF NOT EXISTS partners(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS partner_contacts(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(partner_id,person_id)); CREATE TABLE IF NOT EXISTS partner_referrals(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS partner_interactions(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),payload BLOB NOT NULL);")
+  self.db.execute('CREATE TABLE IF NOT EXISTS resources(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL)'); self.db.commit()
+ def resources(self):
+  return [(i,self.dec(p)) for i,p in self.db.execute('SELECT id,payload FROM resources ORDER BY id')]
+ def save_resource(self,data,i=None):
+  d=rd.normalize(data); existing=self.resources()
+  if any(j!=i and rd.key(x)==rd.key(d) for j,x in existing): raise ValueError('Duplicate resource (name/category/university).')
+  with self.db:
+   if i is None: i=self.db.execute('INSERT INTO resources(payload) VALUES (?)',(self.enc(d),)).lastrowid
+   else:
+    if self.db.execute('UPDATE resources SET payload=? WHERE id=?',(self.enc(d),i)).rowcount!=1: raise ValueError('Resource not found.')
+  return i
+ def import_resources(self,rows):
+  seen={rd.key(d) for _,d in self.resources()}; added=skipped=0
+  validated=[rd.normalize(dict(d,Publish='No')) for d in rows]
+  with self.db:
+   for d in validated:
+    k=rd.key(d)
+    if k in seen: skipped+=1; continue
+    self.db.execute('INSERT INTO resources(payload) VALUES (?)',(self.enc(d),)); seen.add(k); added+=1
+  return added,skipped
  def save_activity(self,program,data,i=None):
   if not data.get('Name','').strip(): raise ValueError('Activity name is required.')
   date.fromisoformat(data['Date'])
@@ -173,7 +194,7 @@ class HelperEditor(QDialog):
   self.accept()
 class Window(QMainWindow):
  def __init__(self,store,folder):
-  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.7'); self.resize(1250,750)
+  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.8'); self.resize(1250,750)
   root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); side=QVBoxLayout(); outer.addLayout(side); brand=QLabel('DIDAR\nCONNECT'); brand.setObjectName('brand'); side.addWidget(brand)
   for name,mode in [('People registry','people'),('International students','students'),('Volunteers & mentors','helpers')]:
    b=QPushButton(name); b.clicked.connect(lambda checked=False,m=mode:self.switch(m)); side.addWidget(b)
@@ -186,6 +207,7 @@ class Window(QMainWindow):
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
   for label,kind in [('Institutional partners','partners'),('Partner contacts','partner_contacts'),('Institutional referrals','partner_referrals'),('Partner interactions','partner_interactions')]:
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
+  resource=QPushButton('Community resources'); resource.clicked.connect(self.resource_dialog); side.addWidget(resource)
   storage=QPushButton('Database location'); storage.clicked.connect(lambda:QMessageBox.information(self,'Database location',str(self.folder/'didar.sqlite'))); side.addWidget(storage)
   side.addStretch(); backup=QPushButton('Create database backup'); backup.clicked.connect(self.backup); side.addWidget(backup)
   main=QVBoxLayout(); outer.addLayout(main,1); self.title=QLabel(); self.title.setObjectName('title'); main.addWidget(self.title); self.stats=QLabel(); main.addWidget(self.stats); bar=QHBoxLayout(); main.addLayout(bar); self.search=QLineEdit(); self.search.setPlaceholderText('Search name, ID, email, role…'); self.search.textChanged.connect(self.refresh); bar.addWidget(self.search,1)
@@ -359,6 +381,57 @@ class Window(QMainWindow):
   if kind=='programs':
    b=QPushButton('Manage registrations / team'); b.clicked.connect(lambda:self.organization_dialog('registrations')); bar.addWidget(b)
   table.doubleClicked.connect(edit_selected); search.textChanged.connect(refresh); refresh(); dlg.exec()
+ def resource_dialog(self):
+  dlg=QDialog(self); dlg.setWindowTitle('Community resource directory'); dlg.resize(1150,650); layout=QVBoxLayout(dlg); filters=QHBoxLayout(); layout.addLayout(filters)
+  search=QLineEdit(); search.setPlaceholderText('Search resources…'); filters.addWidget(search)
+  category=QComboBox(); university=QComboBox(); audience=QComboBox(); audience.addItems(['All audiences','International students','Newcomers','Refugee claimants']); eligibility=QComboBox(); eligibility.addItems(['Any eligibility']+list(rd.ELIGIBILITY)); status=QComboBox(); status.addItems(['All statuses']+list(rd.OPTIONS['Status']))
+  for w in (category,university,audience,eligibility,status): filters.addWidget(w)
+  stats=QLabel(); layout.addWidget(stats); headers=['Name','Category','University','International students','Newcomers','Refugee claimants','Last verified','Status','Publish']; table=QTableWidget(0,len(headers)+1); table.setHorizontalHeaderLabels(['ID']+headers); table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.SingleSelection); table.setEditTriggers(QAbstractItemView.NoEditTriggers); layout.addWidget(table); rows=[]
+  def refresh(*args):
+   allrows=self.store.resources(); q=search.text().casefold(); rows[:]=[(i,d) for i,d in allrows if q in (' '.join(d.values())+f' DIDAR-RES-{i:06d}').casefold() and (category.currentText()=='All categories' or d['Category']==category.currentText()) and (university.currentText()=='All universities' or d['University']==university.currentText()) and (status.currentText()=='All statuses' or d['Status']==status.currentText()) and (audience.currentText()=='All audiences' or eligibility.currentText()=='Any eligibility' or d[audience.currentText()]==eligibility.currentText())]; table.setRowCount(len(rows)); stats.setText(f'{len(rows)} of {len(allrows)} resources')
+   for r,(i,d) in enumerate(rows):
+    for c,v in enumerate([f'DIDAR-RES-{i:06d}']+[d[f] for f in headers]): table.setItem(r,c,QTableWidgetItem(v))
+  def reload():
+   records=self.store.resources()
+   for w,f,default in [(category,'Category','All categories'),(university,'University','All universities')]:
+    old=w.currentText(); w.blockSignals(True); w.clear(); w.addItems([default]+sorted({d[f] for _,d in records if d[f]})); w.setCurrentIndex(max(0,w.findText(old))); w.blockSignals(False)
+   refresh()
+  def edit(existing=None):
+   ed=QDialog(dlg); ed.setWindowTitle('Resource profile — public fields only except internal notes'); ed.resize(750,720); v=QVBoxLayout(ed); scroll=QScrollArea(); scroll.setWidgetResizable(True); content=QWidget(); form=QFormLayout(content); scroll.setWidget(content); v.addWidget(scroll); inputs={}; data=existing[1] if existing else {}
+   for f in rd.FIELDS:
+    if f in rd.OPTIONS: w=QComboBox(); w.addItems(list(rd.OPTIONS[f])); w.setCurrentText(data.get(f,rd.OPTIONS[f][0]))
+    elif f in ('Services','Eligibility','Internal notes'): w=QTextEdit(); w.setMaximumHeight(85); w.setPlainText(data.get(f,''))
+    else: w=QLineEdit(data.get(f,'')); w.setPlaceholderText('YYYY-MM-DD' if f=='Last verified' else '')
+    inputs[f]=w; form.addRow(f,w)
+   b=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); v.addWidget(b); b.accepted.connect(ed.accept); b.rejected.connect(ed.reject)
+   while ed.exec():
+    try:
+     d={f:w.currentText() if isinstance(w,QComboBox) else w.toPlainText() if isinstance(w,QTextEdit) else w.text() for f,w in inputs.items()}; self.store.save_resource(d,existing[0] if existing else None); reload(); break
+    except ValueError as e: QMessageBox.warning(ed,'Cannot save',str(e))
+  def selected(*args):
+   if 0<=table.currentRow()<len(rows): edit(rows[table.currentRow()])
+  def transfer(action):
+   try:
+    if action=='import':
+     path,_=QFileDialog.getOpenFileName(dlg,'Import resources','','Resources (*.csv *.xlsx)');
+     if not path:return
+     data=rd.read_rows(path)
+     if QMessageBox.question(dlg,'Confirm import',f'Import {len(data)} validated rows? Duplicates are skipped; all imported rows are unpublished.')!=QMessageBox.Yes:return
+     a,b=self.store.import_resources(data); reload(); QMessageBox.information(dlg,'Import complete',f'{a} added; {b} duplicates skipped.')
+    elif action=='template':
+     path,_=QFileDialog.getSaveFileName(dlg,'CSV template','resources-template.csv','CSV (*.csv)')
+     if path: rd.write_template(path)
+    else:
+     if QMessageBox.question(dlg,'Public export','Export ALL active, verified, publication-approved resources (not just filtered rows)? Review public fields for personal information before publishing.')!=QMessageBox.Yes:return
+     path,_=QFileDialog.getSaveFileName(dlg,'Public JSON export','resources.json','JSON (*.json)')
+     if path: n=rd.export_public(path,self.store.resources()); QMessageBox.information(dlg,'Export complete',f'{n} public resources exported.')
+   except Exception as e: QMessageBox.warning(dlg,'Operation failed',str(e))
+  bar=QHBoxLayout(); layout.addLayout(bar)
+  for label,fn in [('Add resource',lambda:edit()),('Edit selected',selected),('Import CSV / Excel',lambda:transfer('import')),('CSV template',lambda:transfer('template')),('Export public JSON',lambda:transfer('export'))]:
+   b=QPushButton(label); b.clicked.connect(fn); bar.addWidget(b)
+  table.doubleClicked.connect(selected); search.textChanged.connect(refresh)
+  for w in (category,university,audience,eligibility,status): w.currentTextChanged.connect(refresh)
+  reload(); dlg.exec()
  def open_case(self):
   s=self.selected()
   if s:

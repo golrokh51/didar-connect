@@ -1,4 +1,4 @@
-# DIDAR Connect V0.7
+# DIDAR Connect V0.8
 Single-user, offline student accompaniment prototype. Python 3.10–3.13 recommended.
 
 ## macOS
@@ -46,3 +46,6 @@ Back up V0.5, close it, replace main.py, README.md and test_store.py. No new dep
 
 ## V0.7 — Institutional partners
 Back up V0.6 and close it before replacing main.py, README.md and test_store.py. Four new tables are created automatically. Register organizations, link existing people as contacts, record incoming/outgoing referrals and organization interactions with follow-up dates. Existing text referral fields in student profiles are retained; create structured referrals manually. Partner contacts and referrals link to people; deleting a person removes these links. Archive organizations rather than deleting them. No external synchronization, automatic reminders or consent enforcement. No real data is included. Test on dummy records before production use.
+
+## V0.8 — Community resource directory
+Back up V0.7 and close it. Copy main.py, resource_directory.py, README.md, requirements.txt and test_store.py into your existing project. Install updated dependencies (`python -m pip install -r requirements.txt`). The database path/passphrase are unchanged; a new encrypted-payload resources table is created automatically. Community resources supports search, category/university/status and audience eligibility filters, add/edit, CSV template, CSV and XLSX import (first active worksheet, exact template headers), and public JSON export. Imports validate all rows before insertion, skip duplicates by name/category/university and always disable publication. Use Unknown rather than guessing eligibility. Public export includes only active records with a verification date and explicit Publish=Yes, excludes internal notes and does not read participant data. Review all public fields for personal information and verify facts before publishing; no automatic website upload or live eligibility verification. Archive outdated resources. Existing files with different headers require manual mapping to the template. Run python test_store.py; Qt GUI testing is still required.
