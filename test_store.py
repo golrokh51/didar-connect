@@ -33,3 +33,12 @@ with tempfile.TemporaryDirectory() as temp:
  except ValueError: pass
  db.backup(pathlib.Path(temp)/'copy.sqlite'); copy=Store(pathlib.Path(temp)/'copy.sqlite','dummy-password-123'); assert copy.records('attendance')==db.records('attendance'); copy.db.close(); db.delete(person); assert not db.records('attendance') and len(db.records('activities'))==2; db.db.close()
 print('PASS: v0.5 migration, optional program, attendance editing, duplicate guard, date validation, backup and cascade deletion')
+with tempfile.TemporaryDirectory() as temp:
+ p=pathlib.Path(temp)/'test.sqlite'; old=Store
+ db=old(p,'dummy-password-123'); person=db.save({'First name':'Test','Last name':'Contact','Roles':['Other']}); db.db.executescript('DROP TABLE partner_interactions; DROP TABLE partner_referrals; DROP TABLE partner_contacts; DROP TABLE partners;'); db.db.close()
+ db=Store(p,'dummy-password-123'); org=db.save_record('partners',[],{'Name':'Dummy University'}); contact=db.save_record('partner_contacts',[org,person],{'Role':'Professor'}); ref=db.save_record('partner_referrals',[org,person],{'Date':'2026-11-26','Direction':'Incoming'}); interaction=db.save_record('partner_interactions',[org],{'Date':'2026-11-26','Subject':'Dummy meeting'}); assert 'Partner contact' in dict(db.people())[person]['Roles']
+ for kind,links,data in [('partners',[],{'Name':'dummy university'}),('partner_contacts',[org,person],{}),('partner_referrals',[org,person],{'Date':'bad'})]:
+  try: db.save_record(kind,links,data); raise AssertionError('invalid accepted')
+  except ValueError: pass
+ db.backup(pathlib.Path(temp)/'copy.sqlite'); copy=Store(pathlib.Path(temp)/'copy.sqlite','dummy-password-123'); assert copy.records('partner_referrals')==db.records('partner_referrals'); copy.db.close(); db.delete(person); assert not db.records('partner_contacts') and not db.records('partner_referrals') and db.records('partners') and db.records('partner_interactions'); db.db.close()
+print('PASS: partner schema migration, contacts, referrals, interactions, validation, backup and cascade deletion')

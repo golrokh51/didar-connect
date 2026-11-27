@@ -31,6 +31,7 @@ class Store:
   self.db.executescript("CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY AUTOINCREMENT, mentor_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, student_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS volunteer_hours(id INTEGER PRIMARY KEY AUTOINCREMENT, person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL);")
   self.db.executescript("CREATE TABLE IF NOT EXISTS committees(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS programs(id INTEGER PRIMARY KEY AUTOINCREMENT,committee_id INTEGER NOT NULL REFERENCES committees(id),payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS memberships(id INTEGER PRIMARY KEY AUTOINCREMENT,committee_id INTEGER NOT NULL REFERENCES committees(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(committee_id,person_id)); CREATE TABLE IF NOT EXISTS registrations(id INTEGER PRIMARY KEY AUTOINCREMENT,program_id INTEGER NOT NULL REFERENCES programs(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(program_id,person_id));")
   self.db.executescript("CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY AUTOINCREMENT, program_id INTEGER REFERENCES programs(id), payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL REFERENCES activities(id), person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, payload BLOB NOT NULL, UNIQUE(activity_id,person_id));")
+  self.db.executescript("CREATE TABLE IF NOT EXISTS partners(id INTEGER PRIMARY KEY AUTOINCREMENT,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS partner_contacts(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL,UNIQUE(partner_id,person_id)); CREATE TABLE IF NOT EXISTS partner_referrals(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS partner_interactions(id INTEGER PRIMARY KEY AUTOINCREMENT,partner_id INTEGER NOT NULL REFERENCES partners(id),payload BLOB NOT NULL);")
  def save_activity(self,program,data,i=None):
   if not data.get('Name','').strip(): raise ValueError('Activity name is required.')
   date.fromisoformat(data['Date'])
@@ -46,25 +47,27 @@ class Store:
    else: self.db.execute('UPDATE attendance SET payload=? WHERE id=? AND activity_id=? AND person_id=?',(self.enc(data),i,activity,person))
   return i
  def records(self,kind):
-  columns={'activities':'id,program_id,payload','attendance':'id,activity_id,person_id,payload','committees':'id,payload','programs':'id,committee_id,payload','memberships':'id,committee_id,person_id,payload','registrations':'id,program_id,person_id,payload'}
+  columns={'partners':'id,payload','partner_contacts':'id,partner_id,person_id,payload','partner_referrals':'id,partner_id,person_id,payload','partner_interactions':'id,partner_id,payload','activities':'id,program_id,payload','attendance':'id,activity_id,person_id,payload','committees':'id,payload','programs':'id,committee_id,payload','memberships':'id,committee_id,person_id,payload','registrations':'id,program_id,person_id,payload'}
   return [(*r[:-1],self.dec(r[-1])) for r in self.db.execute('SELECT '+columns[kind]+' FROM '+kind+' ORDER BY id')]
  def save_record(self,kind,links,data,i=None):
-  cols={'committees':(), 'programs':('committee_id',), 'memberships':('committee_id','person_id'), 'registrations':('program_id','person_id')}[kind]
+  cols={'partners':(), 'partner_contacts':('partner_id','person_id'), 'partner_referrals':('partner_id','person_id'), 'partner_interactions':('partner_id',), 'committees':(), 'programs':('committee_id',), 'memberships':('committee_id','person_id'), 'registrations':('program_id','person_id')}[kind]
   if len(links)!=len(cols): raise ValueError('Invalid relationships.')
-  if kind in ('committees','programs'):
+  if kind in ('committees','programs','partners'):
    if not data.get('Name','').strip(): raise ValueError('Name is required.')
-   if any(r[0]!=i and r[-1].get('Name','').strip().casefold()==data['Name'].strip().casefold() and (kind=='committees' or r[1]==links[0]) for r in self.records(kind)): raise ValueError('A record with this name already exists.')
-  for field in ('Start date','End date'):
+   if any(r[0]!=i and r[-1].get('Name','').strip().casefold()==data['Name'].strip().casefold() and (kind in ('committees','partners') or r[1]==links[0]) for r in self.records(kind)): raise ValueError('A record with this name already exists.')
+  if kind in ('partner_referrals','partner_interactions'):
+   date.fromisoformat(data.get('Date',''))
+  for field in ('Start date','End date','Follow-up date'):
    if data.get(field): date.fromisoformat(data[field])
   if data.get('Start date') and data.get('End date') and data['End date']<data['Start date']: raise ValueError('End date precedes start date.')
-  if kind in ('memberships','registrations') and any(r[0]!=i and tuple(r[1:-1])==tuple(links) for r in self.records(kind)): raise ValueError('This person already has a record here; edit the existing record.')
+  if kind in ('memberships','registrations','partner_contacts') and any(r[0]!=i and tuple(r[1:-1])==tuple(links) for r in self.records(kind)): raise ValueError('This person already has a record here; edit the existing record.')
   with self.db:
    if i is None:
     fields=cols+('payload',); i=self.db.execute('INSERT INTO '+kind+'('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+')',(*links,self.enc(data))).lastrowid
    else:
     self.db.execute('UPDATE '+kind+' SET '+','.join(c+'=?' for c in cols+('payload',))+' WHERE id=?',(*links,self.enc(data),i))
-   if kind in ('memberships','registrations'):
-    person=dict(self.people())[links[1]]; role='Committee member' if kind=='memberships' else 'Volunteer' if data.get('Role')=='Volunteer' else 'Participant' if data.get('Role')=='Participant' else None
+   if kind in ('memberships','registrations','partner_contacts'):
+    person=dict(self.people())[links[1]]; role='Partner contact' if kind=='partner_contacts' else 'Committee member' if kind=='memberships' else 'Volunteer' if data.get('Role')=='Volunteer' else 'Participant' if data.get('Role')=='Participant' else None
     if role and role not in roles(person):
      person['Roles']=roles(person)+[role]; self.db.execute('UPDATE people SET payload=? WHERE id=?',(self.enc(person),links[1]))
   return i
@@ -170,7 +173,7 @@ class HelperEditor(QDialog):
   self.accept()
 class Window(QMainWindow):
  def __init__(self,store,folder):
-  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.6'); self.resize(1250,750)
+  super().__init__(); self.store=store; self.folder=folder; self.mode='people'; self.setWindowTitle('DIDAR Connect — v0.7'); self.resize(1250,750)
   root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); side=QVBoxLayout(); outer.addLayout(side); brand=QLabel('DIDAR\nCONNECT'); brand.setObjectName('brand'); side.addWidget(brand)
   for name,mode in [('People registry','people'),('International students','students'),('Volunteers & mentors','helpers')]:
    b=QPushButton(name); b.clicked.connect(lambda checked=False,m=mode:self.switch(m)); side.addWidget(b)
@@ -180,6 +183,8 @@ class Window(QMainWindow):
   for label,kind in [('Committees','committees'),('Committee memberships','memberships'),('Programs','programs'),('Program registrations / team','registrations')]:
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
   for label,kind in [('Activities','activities'),('Attendance','attendance')]:
+   b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
+  for label,kind in [('Institutional partners','partners'),('Partner contacts','partner_contacts'),('Institutional referrals','partner_referrals'),('Partner interactions','partner_interactions')]:
    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=kind:self.organization_dialog(k)); side.addWidget(b)
   storage=QPushButton('Database location'); storage.clicked.connect(lambda:QMessageBox.information(self,'Database location',str(self.folder/'didar.sqlite'))); side.addWidget(storage)
   side.addStretch(); backup=QPushButton('Create database backup'); backup.clicked.connect(self.backup); side.addWidget(backup)
@@ -278,8 +283,12 @@ class Window(QMainWindow):
    b=QPushButton(label); b.clicked.connect(fn); v.addWidget(b)
   refresh(); dlg.exec()
  def organization_dialog(self,kind):
-  titles={'activities':'Activities','attendance':'Attendance','committees':'Committees','programs':'Programs','memberships':'Committee memberships','registrations':'Program registrations / team'}
+  titles={'partners':'Institutional partners','partner_contacts':'Partner contacts','partner_referrals':'Institutional referrals','partner_interactions':'Partner interactions','activities':'Activities','attendance':'Attendance','committees':'Committees','programs':'Programs','memberships':'Committee memberships','registrations':'Program registrations / team'}
   fields={
+   'partners':[('Name',None),('Name (French)',None),('Name (Persian)',None),('Type',['University','Community organization','Government','Funding institution','Business','Other']),('Status',['Prospective','Active','Inactive','Archived']),('Website',None),('General email',None),('Phone',None),('Location',None),('Start date',None),('End date',None),('Collaboration areas','text'),('Notes','text')],
+   'partner_contacts':[('Role',None),('Department',None),('Status',['Active','Inactive']),('Notes','text')],
+   'partner_referrals':[('Date',None),('Direction',['Incoming','Outgoing']),('Referrer name',None),('Service / program',None),('Status',['Received','Contacted','In progress','Completed','Declined']),('Consent',['Pending','Granted','Declined','Withdrawn']),('Notes','text')],
+   'partner_interactions':[('Date',None),('Type',['Email','Meeting','Phone','Video call','Other']),('Subject',None),('Status',['Open','Completed']),('Next action',None),('Follow-up date',None),('Notes','text')],
    'activities':[('Name',None),('Date',None),('Start time',None),('End time',None),('Location',None),('Type',['Workshop','Meeting','Screening','Social event','Training','Other']),('Status',['Planned','Completed','Cancelled']),('Series / recurring activity',None),('Objectives','text'),('Expenses (CAD)',None),('Evaluation / outcomes','text'),('Notes','text')],
    'attendance':[('Role',['Participant','Volunteer','Facilitator','Coordinator']),('Status',['Registered','Attended','Absent','Cancelled']),('Consent',['Pending','Granted','Declined','Withdrawn']),('Notes','text')],
    'committees':[('Name',None),('Name (French)',None),('Name (Persian)',None),('Status',['Planned','Active','Inactive','Archived']),('Mandate','text'),('Notes','text')],
@@ -287,15 +296,16 @@ class Window(QMainWindow):
    'memberships':[('Role',['Member','Coordinator','Co-coordinator','Secretary','Volunteer','Advisor']),('Status',['Proposed','Active','Ended']),('Start date',None),('End date',None),('Responsibilities','text'),('Notes','text')],
    'registrations':[('Role',['Participant','Volunteer','Facilitator','Coordinator']),('Status',['Pending','Active','Completed','Withdrawn','Cancelled']),('Start date',None),('End date',None),('Consent',['Pending','Granted','Declined','Withdrawn']),('Responsibilities / support','text'),('Notes','text')]}
   dlg=QDialog(self); dlg.setWindowTitle(titles[kind]); dlg.resize(1050,600); layout=QVBoxLayout(dlg); search=QLineEdit(); search.setPlaceholderText('Search records…'); layout.addWidget(search); stats=QLabel(); layout.addWidget(stats)
-  linklabels={'activities':['Optional program'],'attendance':['Activity','Person'],'committees':[], 'programs':['Committee'], 'memberships':['Committee','Person'], 'registrations':['Program','Person']}[kind]
-  headers=['ID']+linklabels+[f for f,_ in fields[kind] if f in ('Name','Role','Status','Start date','End date','Consent','Date','Location','Type')]; table=QTableWidget(0,len(headers)); table.setHorizontalHeaderLabels(headers); table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.SingleSelection); table.setEditTriggers(QAbstractItemView.NoEditTriggers); layout.addWidget(table); rows=[]
+  linklabels={'partners':[],'partner_contacts':['Partner','Person'],'partner_referrals':['Partner','Person'],'partner_interactions':['Partner'],'activities':['Optional program'],'attendance':['Activity','Person'],'committees':[], 'programs':['Committee'], 'memberships':['Committee','Person'], 'registrations':['Program','Person']}[kind]
+  headers=['ID']+linklabels+[f for f,_ in fields[kind] if f in ('Name','Role','Status','Start date','End date','Consent','Date','Location','Type','Direction','Subject','Follow-up date')]; table=QTableWidget(0,len(headers)); table.setHorizontalHeaderLabels(headers); table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.SingleSelection); table.setEditTriggers(QAbstractItemView.NoEditTriggers); layout.addWidget(table); rows=[]
   def choices(label):
+   if label=='Partner': return [(r[0],r[-1]['Name']) for r in self.store.records('partners')]
    if label=='Person': return [(i,full_name(d)+' — '+person_id(i)) for i,d in self.store.people()]
    if label=='Optional program': return [(None,'No program')]+[(r[0],r[-1]['Name']) for r in self.store.records('programs')]
    if label=='Activity': return [(r[0],r[-1]['Date']+' — '+r[-1]['Name']) for r in self.store.records('activities')]
    return [(r[0],r[-1]['Name']+(' — '+str(r[0]))) for r in self.store.records('committees' if label=='Committee' else 'programs')]
   def refresh(*args):
-   allrows=self.store.records(kind); rows.clear(); values=[]; q=search.text().casefold(); maps=[dict(choices(l)) for l in linklabels]; prefix={'activities':'ACT','attendance':'ATT','committees':'COM','programs':'PRG','memberships':'MEM','registrations':'REG'}[kind]
+   allrows=self.store.records(kind); rows.clear(); values=[]; q=search.text().casefold(); maps=[dict(choices(l)) for l in linklabels]; prefix={'partners':'ORG','partner_contacts':'PC','partner_referrals':'REF','partner_interactions':'PIN','activities':'ACT','attendance':'ATT','committees':'COM','programs':'PRG','memberships':'MEM','registrations':'REG'}[kind]
    for r in allrows:
     d=r[-1]; cells=[f'DIDAR-{prefix}-{r[0]:06d}']+[m.get(i,str(i)) for m,i in zip(maps,r[1:-1])]+[d.get(f,'') for f in headers[1+len(linklabels):]]
     if q in (' '.join(cells)+' '+str(d)).casefold(): rows.append(r); values.append(cells)
@@ -339,6 +349,9 @@ class Window(QMainWindow):
   bar=QHBoxLayout(); layout.addLayout(bar)
   for label,fn in [('Add record',lambda:edit()),('Edit selected',edit_selected)]:
    b=QPushButton(label); b.clicked.connect(fn); bar.addWidget(b)
+  if kind=='partners':
+   for label,target in [('Contacts','partner_contacts'),('Referrals','partner_referrals'),('Interactions','partner_interactions')]:
+    b=QPushButton(label); b.clicked.connect(lambda checked=False,k=target:self.organization_dialog(k)); bar.addWidget(b)
   if kind=='activities':
    b=QPushButton('Manage attendance'); b.clicked.connect(lambda:self.organization_dialog('attendance')); bar.addWidget(b)
   if kind=='committees':
@@ -365,7 +378,7 @@ class Window(QMainWindow):
   dlg=QDialog(self); dlg.setWindowTitle('Interaction history'); dlg.resize(650,450); v=QVBoxLayout(dlg); t=QTextEdit(); t.setReadOnly(True); t.setPlainText('\n\n'.join(f"{x['date']} — {x['type']}\n{x['note']}" for x in self.store.history(s[0])) or 'No interactions yet.'); v.addWidget(t); dlg.exec()
  def delete(self):
   s=self.selected()
-  if s and QMessageBox.question(self,'Delete person','Permanently delete this person, all roles, student information, interaction history, mentor assignments, volunteer hours, committee memberships, program registrations and attendance? Existing backups will retain copies.')==QMessageBox.Yes: self.store.delete(s[0]); self.refresh()
+  if s and QMessageBox.question(self,'Delete person','Permanently delete this person, all roles, student information, interaction history, mentor assignments, volunteer hours, committee memberships, program registrations, attendance, partner contacts and referrals? Existing backups will retain copies.')==QMessageBox.Yes: self.store.delete(s[0]); self.refresh()
  def backup(self):
   from datetime import datetime
   p=self.folder/'backups'; p.mkdir(exist_ok=True); target=p/('didar-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite'); self.store.backup(target); QMessageBox.information(self,'Backup created',str(target))
