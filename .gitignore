@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Databases and related files
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-*
+*.sqlite3-*
+*.db-*
+
+# Confidential data
+data/
+backups/
+exports/
+*.csv
+*.xlsx
+*.pem
+*.key
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Application builds
+build/
+dist/
+*.spec
+*.app/
+*.zip
+
+# Logs
+*.log
+
